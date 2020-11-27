@@ -1,55 +1,99 @@
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:quizapp2/models/user.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:apple_sign_in/apple_sign_in.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
 
-class AuthService{
-
+class AuthService {
+  final GoogleSignIn _googleSignIn = GoogleSignIn();
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final Firestore _db = Firestore.instance;
 
-  User _userFromFirebaseUser(FirebaseUser user) {
+  // Firebase user one-time fetch
+  Future<FirebaseUser> get getUser => _auth.currentUser();
 
-    return user != null ? User(uid:  user.uid) : null;
-  }
+  // Firebase user a realtime stream
+  Stream<FirebaseUser> get user => _auth.onAuthStateChanged;
 
+  // Determine if Apple Signin is available on device
+  Future<bool> get appleSignInAvailable => AppleSignIn.isAvailable();
 
-  Future signInEmailAndPass(String email, String password) async{
-    try{
-      AuthResult authResult = await _auth.signInWithEmailAndPassword(email: email, password: password);
-      FirebaseUser firebaseUser = authResult.user;
-      return _userFromFirebaseUser(firebaseUser);
-    }catch(e){
-      print(e);
-    }
-  }
+  /// Sign in with Apple
+  Future<FirebaseUser> appleSignIn() async {
+    try {
+      final AuthorizationResult appleResult =
+          await AppleSignIn.performRequests([
+        AppleIdRequest(requestedScopes: [Scope.email, Scope.fullName])
+      ]);
 
-  Future signUpWithEmailAndPassword(String email, String password) async {
+      if (appleResult.error != null) {
+        // handle errors from Apple
+      }
 
-    try{
-      AuthResult authResult = await _auth.createUserWithEmailAndPassword(email: email, password: password);
-      FirebaseUser user = authResult.user;
-      return _userFromFirebaseUser(user);
-    }catch(e){
-      print(e.toString());
+      final AuthCredential credential =
+          OAuthProvider(providerId: 'apple.com').getCredential(
+        accessToken:
+            String.fromCharCodes(appleResult.credential.authorizationCode),
+        idToken: String.fromCharCodes(appleResult.credential.identityToken),
+      );
+
+      AuthResult firebaseResult = await _auth.signInWithCredential(credential);
+      FirebaseUser user = firebaseResult.user;
+
+      // Update user data
+      updateUserData(user);
+
+      return user;
+    } catch (error) {
+      print(error);
       return null;
     }
-
   }
 
-  Future signOut() async{
+  /// Sign in with Google
+  Future<FirebaseUser> googleSignIn() async {
+    try {
+      GoogleSignInAccount googleSignInAccount = await _googleSignIn.signIn();
+      GoogleSignInAuthentication googleAuth =
+          await googleSignInAccount.authentication;
 
-    try{
-      return await _auth.signOut();
-    }catch(e){
-      print(e.toString());
+      final AuthCredential credential = GoogleAuthProvider.getCredential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      AuthResult result = await _auth.signInWithCredential(credential);
+      FirebaseUser user = result.user;
+
+      // Update user data
+      updateUserData(user);
+
+      return user;
+    } catch (error) {
+      print(error);
       return null;
     }
   }
 
-  Future resetPass(String email) async{
-    try{
-      return await _auth.sendPasswordResetEmail(email: email);
-    }catch(e){
-      print(e.toString());
-      return null;
-    }
+  /// Anonymous Firebase login
+  Future<FirebaseUser> anonLogin() async {
+    AuthResult result = await _auth.signInAnonymously();
+    FirebaseUser user = result.user;
+
+    updateUserData(user);
+    return user;
+  }
+
+  /// Updates the User's data in Firestore on each new login
+  Future<void> updateUserData(FirebaseUser user) {
+    DocumentReference reportRef = _db.collection('reports').document(user.uid);
+
+    return reportRef.setData({'uid': user.uid, 'lastActivity': DateTime.now()},
+        merge: true);
+  }
+
+  // Sign out
+  Future<void> signOut() {
+    return _auth.signOut();
   }
 }
